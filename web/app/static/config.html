@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDS2018 · Cấu hình ngưỡng</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="/static/common.js"></script>
+</head>
+<body>
+<main>
+  <h1>Cấu hình ngưỡng cảnh báo</h1>
+  <p class="sub">Thay đổi được ghi vào MongoDB; Spark Structured Streaming đọc lại cấu hình ở <b>mỗi micro-batch</b> nên áp dụng ngay cho luồng đang chạy, không cần khởi động lại.</p>
+  <div class="grid g2">
+    <div class="card">
+      <h2>Thiết lập hiện tại</h2>
+      <div class="kv" id="cur" style="margin-bottom:16px"></div>
+      <div class="toolbar">
+        <label class="f">Chi phí báo động nhầm c_FP<input id="cfp" type="number" min="0.01" step="1" style="width:110px"></label>
+        <label class="f">Chi phí bỏ sót c_FN<input id="cfn" type="number" min="0.01" step="1" style="width:110px"></label>
+      </div>
+      <div class="toolbar">
+        <label class="f" style="flex:1">Ngưỡng xác suất: <b id="thr-v"></b><input id="thr" type="range" min="0" max="1" step="0.001"></label>
+      </div>
+      <div class="toolbar">
+        <button id="opt">Áp dụng ngưỡng tối ưu chi phí cho tỷ lệ này</button>
+        <button id="save" class="sec">Áp dụng ngưỡng đã chọn</button>
+        <button id="half" class="sec">Đặt về 0,5</button>
+      </div>
+      <div id="msg" class="note"></div>
+    </div>
+    <div class="card">
+      <h2>Chi phí trên tập validation theo ngưỡng</h2>
+      <div class="chart"><canvas id="c"></canvas></div>
+      <div class="note" id="hint"></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Ước lượng trên tập validation tại ngưỡng đang chọn</h3><div class="kpis" id="est" style="margin:0"></div></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let curve = null, deploy = null;
+async function load() {
+  const [cfg, d] = await Promise.all([api("/api/config"), api("/api/deploy")]);
+  deploy = d; if (d.val_hist) curve = confCurve(d.val_hist.pos, d.val_hist.neg);
+  $("#cfp").value = cfg.c_fp; $("#cfn").value = cfg.c_fn; $("#thr").value = cfg.threshold;
+  $("#cur").innerHTML = `<div>Mô hình nhị phân</div><div>${esc(d.binary_algorithm_name || "–")}</div>
+    <div>Cách chọn mô hình</div><div style="white-space:normal">${esc(d.selected_by || "–")}</div>
+    <div>Mô hình loại tấn công</div><div>${d.multiclass_model ? "Random Forest đa lớp" : "–"}</div>
+    <div>Ngưỡng đang áp dụng</div><div>${fmt(cfg.threshold, 3)}</div>
+    <div>Tỷ lệ chi phí</div><div>${fmt(cfg.c_fp)} : ${fmt(cfg.c_fn)}</div>
+    <div>Ngưỡng tối ưu cho tỷ lệ này</div><div>${fmt(cfg.optimal_threshold, 3)}</div>
+    <div>Cập nhật lúc</div><div>${dtime(cfg.updated_at)}</div>`;
+  draw();
+}
+function ratio() { return (+$("#cfn").value) / (+$("#cfp").value || 1); }
+function draw() {
+  const thr = +$("#thr").value; $("#thr-v").textContent = fmt(thr, 3);
+  if (!curve) { $("#hint").textContent = "Chưa có models/deploy.json (chạy huấn luyện kịch bản 1 trước)."; return; }
+  const r = ratio(), cfp = +$("#cfp").value || 1, B = curve.B, xs = [], ys = [];
+  for (let k = 0; k <= B; k += 5) { xs.push((k / B).toFixed(3)); ys.push(cfp * costAt(curve, k, r)); }
+  const kb = bestK(curve, r), kc = Math.min(B, Math.round(thr * B));
+  chart("c", { type: "line", data: { labels: xs, datasets: [{ label: `Chi phí (1:${fmt(r)})`, data: ys, borderColor: "#a371f7", pointRadius: 0 },
+      { label: "Ngưỡng tối ưu", data: xs.map(x => Math.abs(+x - kb / B) < .0026 ? cfp * costAt(curve, kb, r) : null), pointRadius: 6, pointBackgroundColor: "#3fb950", showLine: false },
+      { label: "Ngưỡng đang chọn", data: xs.map(x => Math.abs(+x - kc / B) < .0026 ? cfp * costAt(curve, kc, r) : null), pointRadius: 6, pointBackgroundColor: "#f85149", showLine: false }] },
+    options: { scales: { x: { title: { display: true, text: "ngưỡng" }, ticks: { maxTicksLimit: 11 } }, y: { type: "logarithmic", title: { display: true, text: "chi phí" } } } } });
+  $("#hint").textContent = `Ngưỡng tối ưu cho tỷ lệ 1:${fmt(r)} là ${fmt(kb / B, 3)} (chi phí ${fmt(cfp * costAt(curve, kb, r))}), so với ${fmt(cfp * costAt(curve, B / 2, r))} ở ngưỡng 0,5.`;
+  const m = metricsAt(curve, kc);
+  $("#est").innerHTML = [["TP", fmt(m.tp), "ok"], ["FP", fmt(m.fp), "warn"], ["FN", fmt(m.fn), "bad"], ["Precision", pct(m.precision), ""],
+    ["Recall", pct(m.recall), ""], ["F1", fmt(m.f1, 4), ""], ["Chi phí", fmt(cfp * costAt(curve, kc, r)), "bad"]]
+    .map(([l, v, c]) => `<div class="kpi ${c}"><div class="l">${l}</div><div class="v">${v}</div></div>`).join("");
+}
+["thr", "cfp", "cfn"].forEach(id => $("#" + id).oninput = draw);
+async function save(body) {
+  try { await post("/api/config", Object.assign({ c_fp: +$("#cfp").value, c_fn: +$("#cfn").value }, body)); $("#msg").textContent = "Đã lưu. Áp dụng từ micro-batch kế tiếp."; load(); refreshStatus(); }
+  catch (e) { $("#msg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+$("#opt").onclick = () => save({ use_optimal: true });
+$("#save").onclick = () => save({ threshold: +$("#thr").value });
+$("#half").onclick = () => save({ threshold: 0.5 });
+load();
+</script>
+</body>
+</html>

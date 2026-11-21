@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDS2018 · Thực nghiệm</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="/static/common.js"></script>
+</head>
+<body>
+<main>
+  <h1>Kết quả thực nghiệm</h1>
+  <p class="sub">Đọc từ thư mục <code>results/</code> do pipeline batch (PySpark) sinh ra. Thanh trượt tỷ lệ chi phí tính lại ngưỡng tối ưu trên tập validation và chi phí trên tập test cho mọi mô hình, từ histogram điểm số đã lưu.</p>
+
+  <div class="card toolbar" style="position:sticky;top:52px;z-index:4">
+    <label class="f" style="flex:1;min-width:260px">Tỷ lệ chi phí c_FP : c_FN = 1 : <b id="r-v"></b>
+      <input id="ratio" type="range" min="0" max="3" step="0.01" value="1.699"></label>
+    <button class="sec" data-r="10">1:10</button><button class="sec" data-r="50">1:50</button><button class="sec" data-r="100">1:100</button>
+  </div>
+
+  <section id="s-quality"><h2 class="section">1. Chất lượng dữ liệu</h2><div id="quality"></div></section>
+
+  <section><h2 class="section">2. Kịch bản 1 — chia ngẫu nhiên phân tầng, trước và sau khử trùng lặp</h2>
+    <div id="s1-info" class="note" style="margin-bottom:10px"></div>
+    <div class="card"><div class="scroll" style="max-height:none"><table id="t-s1"></table></div>
+      <div class="note">thr* = ngưỡng có chi phí nhỏ nhất trên <b>validation</b>; mọi chỉ số còn lại đo trên <b>test</b>. “Giảm” = mức giảm chi phí test của thr* so với ngưỡng 0,5.</div></div>
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card"><h3>PR-AUC: có trùng lặp vs đã khử trùng lặp</h3><div class="chart"><canvas id="c-s1auc"></canvas></div>
+        <div class="note">Chênh lệch giữa hai cột là mức “lạc quan giả” do bản ghi trùng lặp xuất hiện ở cả train lẫn test.</div></div>
+      <div class="card"><h3>Chi phí test theo ngưỡng (dữ liệu đã khử trùng lặp)</h3><div class="chart"><canvas id="c-s1cost"></canvas></div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Recall từng loại tấn công (khử trùng lặp, tại thr*)</h3><div class="scroll"><table id="t-s1att"></table></div></div>
+  </section>
+
+  <section><h2 class="section">3. Kịch bản 2 — leave-one-day-out (phát hiện tấn công trên ngày chưa thấy)</h2>
+    <div class="card"><div class="scroll" style="max-height:none"><table id="t-s2"></table></div>
+      <div class="note">Mỗi dòng: huấn luyện trên 9 ngày còn lại (85% train / 15% validation để chọn ngưỡng), kiểm tra trên ngày bị giữ lại. “Họ tấn công mới” = họ tấn công trong ngày test không xuất hiện ở các ngày huấn luyện.</div></div>
+    <div class="grid g2" style="margin-top:14px">
+      <div class="card"><h3>Tổng chi phí 10 fold theo mô hình</h3><div class="chart"><canvas id="c-s2"></canvas></div></div>
+      <div class="card"><h3>Recall theo nhãn tấn công của ngày test (tại thr*)</h3>
+        <label class="f" style="margin-bottom:6px">Mô hình<select id="s2-model"></select></label><div class="scroll" style="max-height:250px"><table id="t-s2att"></table></div></div>
+    </div>
+  </section>
+
+  <section><h2 class="section">4. Phân loại loại tấn công (Random Forest đa lớp)</h2>
+    <div class="grid g2"><div class="card"><h3>Ma trận nhầm lẫn (hàng: thật, cột: dự đoán)</h3><div class="scroll"><table class="cm" id="t-cm"></table></div></div>
+      <div class="card"><h3>Precision / Recall / F1 từng lớp</h3><table id="t-mc"></table><div id="mc-sum" class="note"></div></div></div>
+  </section>
+
+  <section><h2 class="section">5. Khả năng mở rộng: Spark vs pandas / scikit-learn</h2>
+    <div class="toolbar"><label class="f">Tác vụ<select id="sc-task"><option value="etl">Xử lý dữ liệu (CSV → Parquet)</option><option value="train">Huấn luyện Random Forest</option></select></label></div>
+    <div class="grid g2">
+      <div class="card"><h3>Thời gian theo kích thước dữ liệu thật</h3><div class="chart"><canvas id="c-sc1"></canvas></div></div>
+      <div class="card"><h3>Spark: thời gian theo số core</h3><div class="chart"><canvas id="c-sc2"></canvas></div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><div class="scroll"><table id="t-sc"></table></div></div>
+  </section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let X = null;
+const MN = { lr: "Logistic Regression", dt: "Decision Tree", rf: "Random Forest", gbt: "GBT" };
+const missing = what => `<div class="card empty">Chưa có kết quả ${what}. Chạy lệnh tương ứng trong README rồi tải lại trang.</div>`;
+function R() { return Math.round(Math.pow(10, +$("#ratio").value)); }
+document.querySelectorAll("[data-r]").forEach(b => b.onclick = () => { $("#ratio").value = Math.log10(+b.dataset.r); renderCost(); });
+$("#ratio").oninput = renderCost;
+
+function evalModel(m, r) {
+  const vc = confCurve(m.curves.val.pos, m.curves.val.neg), tc = confCurve(m.curves.test.pos, m.curves.test.neg);
+  const k = bestK(vc, r), h = tc.B / 2;
+  const at = metricsAt(tc, k), half = metricsAt(tc, h);
+  return { k, thr: k / tc.B, at, half, cost: costAt(tc, k, r), cost05: costAt(tc, h, r), tc };
+}
+
+function renderQuality(q) {
+  if (!q) { $("#quality").innerHTML = missing("chất lượng dữ liệu (python -m ids.etl)"); return; }
+  const files = q.per_file_counts, d = q.duplicates;
+  const raw = files.reduce((s, f) => s + f.rows, 0), hdr = files.reduce((s, f) => s + f.header_rows, 0), inv = files.reduce((s, f) => s + f.invalid_rows, 0);
+  const k = (l, v, s = "", c = "") => `<div class="kpi ${c}"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+  $("#quality").innerHTML = `<div class="kpis">${k("Dòng đọc từ 10 file", fmt(raw))}${k("Dòng tiêu đề lặp", fmt(hdr), "đã loại", "warn")}
+    ${k("Dòng NaN / Infinity", fmt(inv), pct(inv / raw, 3), "warn")}${k("Dòng sạch", fmt(d.rows_clean))}
+    ${k("Bản ghi trùng lặp", fmt(d.duplicate_rows_removed), pct(d.duplicate_ratio) + " số dòng sạch", "bad")}${k("Sau khử trùng lặp", fmt(d.rows_dedup), "", "ok")}
+    ${k("Vector trùng, nhãn khác", fmt(d.conflicting_label_rows), fmt(d.conflicting_label_groups) + " nhóm", "bad")}${k("Đặc trưng dùng cho mô hình", q.features.length, q.constant_columns.length + " cột hằng số đã bỏ")}</div>
+    <div class="grid g2">
+      <div class="card"><h3>Theo file</h3><div class="scroll"><table><thead><tr><th>Ngày</th><th class="n">Số cột</th><th class="n">Dòng</th><th class="n">Tiêu đề lặp</th><th class="n">NaN/Inf</th></tr></thead><tbody>
+        ${files.map(f => { const m = q.files.find(x => x.file === f.source_file) || {}; return `<tr><td>${f.day}</td><td class="n">${m.n_columns || "–"}${(m.extra_columns || []).length ? ` <span class="muted">(+${m.extra_columns.join(", ")})</span>` : ""}</td><td class="n">${fmt(f.rows)}</td><td class="n">${fmt(f.header_rows)}</td><td class="n">${fmt(f.invalid_rows)}</td></tr>`; }).join("")}</tbody></table></div></div>
+      <div class="card"><h3>Trùng lặp theo nhãn</h3><div class="scroll"><table><thead><tr><th>Nhãn</th><th class="n">Trước</th><th class="n">Sau</th><th class="n">% bị loại</th><th style="width:30%"></th></tr></thead><tbody>
+        ${Object.entries(d.by_label).sort((a, b) => b[1].before - a[1].before).map(([l, v]) => `<tr><td>${esc(l)}</td><td class="n">${fmt(v.before)}</td><td class="n">${fmt(v.after)}</td><td class="n">${pct(v.removed_ratio, 1)}</td><td><div class="bar"><i style="width:${v.removed_ratio * 100}%;background:#f85149"></i></div></td></tr>`).join("")}</tbody></table></div></div>
+    </div>
+    <div class="note">Cột có giá trị lỗi: ${Object.entries(q.columns_with_invalid).map(([c, n]) => `${c} (${fmt(n)})`).join(", ") || "không"}.
+      Cột hằng số (bị loại): ${q.constant_columns.join(", ") || "không"}. Cột định danh bị loại để tránh rò rỉ: ${q.dropped_identifier_columns.join(", ")}.
+      Cột có giá trị âm: ${Object.entries(q.columns_with_negative).map(([c, n]) => `${c} (${fmt(n)})`).join(", ")}.</div>`;
+}
+
+function renderCost() {
+  const r = R(); $("#r-v").textContent = fmt(r);
+  const s1 = X.scenario1, s2 = X.scenario2;
+  if (!s1) $("#t-s1").outerHTML = missing("kịch bản 1 (python -m ids.train scenario1)");
+  else {
+    let rows = "";
+    const best = {};
+    for (const [vn, v] of Object.entries(s1.variants)) for (const [mk, m] of Object.entries(v.models)) {
+      const e = evalModel(m, r); m._e = e;
+      if (!(vn in best) || e.cost < best[vn]) best[vn] = e.cost;
+    }
+    for (const [vn, v] of Object.entries(s1.variants)) for (const [mk, m] of Object.entries(v.models)) {
+      const e = m._e;
+      rows += `<tr><td>${vn === "clean" ? "Có trùng lặp" : "Đã khử trùng lặp"}</td><td>${MN[mk]}</td><td class="n">${fmt(m.test_pr_auc, 4)}</td><td class="n">${fmt(m.test_roc_auc, 4)}</td>
+        <td class="n">${fmt(e.half.f1, 4)}</td><td class="n">${pct(e.half.recall)}</td><td class="n">${fmt(e.cost05)}</td>
+        <td class="n">${fmt(e.thr, 3)}</td><td class="n">${pct(e.at.precision)}</td><td class="n">${pct(e.at.recall)}</td><td class="n">${fmt(e.at.f1, 4)}</td><td class="n">${fmt(e.at.fp)}</td><td class="n">${fmt(e.at.fn)}</td>
+        <td class="n ${e.cost === best[vn] ? "best" : ""}">${fmt(e.cost)}</td><td class="n">${e.cost05 ? pct(1 - e.cost / e.cost05, 1) : "–"}</td><td class="n">${fmt(m.fit_s, 0)}s</td></tr>`;
+    }
+    $("#t-s1").innerHTML = `<thead><tr><th>Dữ liệu</th><th>Mô hình</th><th class="n">PR-AUC</th><th class="n">ROC-AUC</th><th class="n">F1@0.5</th><th class="n">Recall@0.5</th><th class="n">Chi phí@0.5</th>
+      <th class="n">thr*</th><th class="n">Precision</th><th class="n">Recall</th><th class="n">F1</th><th class="n">FP</th><th class="n">FN</th><th class="n">Chi phí@thr*</th><th class="n">Giảm</th><th class="n">Huấn luyện</th></tr></thead><tbody>${rows}</tbody>`;
+    const dd = s1.variants.dedup;
+    if (dd) {
+      const ks = Object.keys(dd.models), B = 1000, xs = [];
+      for (let k = 0; k <= B; k += 10) xs.push((k / B).toFixed(2));
+      chart("c-s1cost", { type: "line", data: { labels: xs, datasets: ks.map((mk, i) => ({ label: MN[mk], borderColor: COLORS[i], pointRadius: 0,
+          data: xs.map((_, j) => costAt(dd.models[mk]._e.tc, j * 10, r)) })) },
+        options: { scales: { y: { type: "logarithmic", title: { display: true, text: "chi phí test" } }, x: { title: { display: true, text: "ngưỡng" }, ticks: { maxTicksLimit: 11 } } } } });
+      const labels = Object.keys(dd.models[ks[0]].test_label_hist || {}).sort();
+      $("#t-s1att").innerHTML = `<thead><tr><th>Nhãn</th><th class="n">Số luồng test</th>${ks.map(mk => `<th class="n">${MN[mk]}</th>`).join("")}</tr></thead><tbody>` +
+        labels.map(l => `<tr><td>${esc(l)}</td><td class="n">${fmt(dd.models[ks[0]].test_label_hist[l].n.reduce((a, b) => a + b, 0))}</td>${ks.map(mk => {
+          const h = dd.models[mk].test_label_hist[l], k = dd.models[mk]._e.k; let n = 0, det = 0;
+          h.b.forEach((b, i) => { n += h.n[i]; if (b >= k) det += h.n[i]; });
+          return `<td class="n" style="color:${det / n > .95 ? "#3fb950" : det / n > .5 ? "#d29922" : "#f85149"}">${pct(det / n, 1)}</td>`; }).join("")}</tr>`).join("") + "</tbody>";
+    }
+  }
+  if (!s2 || !Object.keys(s2.folds || {}).length) { $("#t-s2").innerHTML = `<tr><td>${missing("kịch bản 2 (python -m ids.train scenario2)")}</td></tr>`; }
+  else {
+    const days = Object.keys(s2.folds).sort(), mks = Object.keys(s2.folds[days[0]].models), tot = {};
+    let rows = "";
+    for (const d of days) {
+      const f = s2.folds[d];
+      rows += `<tr><td>${d}</td><td>${Object.keys(f.test_labels).filter(l => l !== "Benign").map(esc).join(", ")}</td><td>${f.unseen_attack_families.length ? `<span class="tag fp">${f.unseen_attack_families.join(", ")}</span>` : "–"}</td>` +
+        mks.map(mk => { const m = f.models[mk]; if (!m) return `<td class="n">–</td><td class="n">–</td>`; const e = evalModel(m, r); tot[mk] = (tot[mk] || 0) + e.cost; m._e = e;
+          return `<td class="n">${pct(e.at.recall, 1)}</td><td class="n">${fmt(e.cost)}</td>`; }).join("") + "</tr>";
+    }
+    $("#t-s2").innerHTML = `<thead><tr><th rowspan=2>Ngày test</th><th rowspan=2>Tấn công trong ngày</th><th rowspan=2>Họ tấn công mới</th>${mks.map(mk => `<th colspan=2 class="n">${MN[mk]}</th>`).join("")}</tr>
+      <tr>${mks.map(() => `<th class="n">Recall</th><th class="n">Chi phí</th>`).join("")}</tr></thead><tbody>${rows}
+      <tr><td><b>Tổng</b></td><td></td><td></td>${mks.map(mk => `<td></td><td class="n"><b>${fmt(tot[mk])}</b></td>`).join("")}</tr></tbody>`;
+    chart("c-s2", { type: "bar", data: { labels: mks.map(m => MN[m]), datasets: [{ label: `Tổng chi phí (1:${r})`, data: mks.map(m => tot[m]), backgroundColor: mks.map((_, i) => COLORS[i]) }] },
+      options: { plugins: { legend: { display: false } } } });
+    const sel = $("#s2-model"); if (!sel.options.length) { sel.innerHTML = mks.map(m => `<option value="${m}">${MN[m]}</option>`).join(""); sel.onchange = renderCost; }
+    const mk = sel.value; let ar = "";
+    for (const d of days) { const m = s2.folds[d].models[mk]; if (!m) continue; for (const [l, h] of Object.entries(m.test_label_hist || {})) {
+      let n = 0, det = 0; h.b.forEach((b, i) => { n += h.n[i]; if (b >= m._e.k) det += h.n[i]; });
+      ar += `<tr><td>${d}</td><td>${esc(l)}</td><td class="n">${fmt(n)}</td><td class="n" style="color:${det / n > .95 ? "#3fb950" : det / n > .5 ? "#d29922" : "#f85149"}">${pct(det / n, 1)}</td></tr>`; } }
+    $("#t-s2att").innerHTML = `<thead><tr><th>Ngày</th><th>Nhãn</th><th class="n">Số luồng</th><th class="n">Recall</th></tr></thead><tbody>${ar}</tbody>`;
+  }
+}
+
+function renderS1Auc(s1) {
+  if (!s1) return;
+  const mks = Object.keys(s1.variants.dedup?.models || s1.variants.clean.models);
+  chart("c-s1auc", { type: "bar", data: { labels: mks.map(m => MN[m]), datasets: Object.entries(s1.variants).map(([vn, v], i) => ({
+      label: vn === "clean" ? "Có trùng lặp" : "Đã khử trùng lặp", data: mks.map(m => v.models[m]?.test_pr_auc), backgroundColor: i ? "#3fb950" : "#f85149" })) },
+    options: { scales: { y: { min: Math.max(0, Math.min(...Object.values(s1.variants).flatMap(v => Object.values(v.models).map(m => m.test_pr_auc))) - 0.05), max: 1 } } } });
+  $("#s1-info").innerHTML = Object.entries(s1.variants).map(([vn, v]) => `${vn === "clean" ? "Có trùng lặp" : "Đã khử trùng lặp"}: train ${fmt(v.sizes.train)} / val ${fmt(v.sizes.val)} / test ${fmt(v.sizes.test)} dòng;
+    <b>${pct(v.test_rows_seen_in_train_ratio)}</b> dòng test có bản sao y hệt trong train.`).join("<br>") + `<br>Preset ${esc(s1.preset)}, train_frac = ${s1.train_frac}.`;
+}
+
+function renderMC(mc) {
+  if (!mc) { $("#t-cm").outerHTML = missing("đa lớp (python -m ids.train multiclass)"); return; }
+  const F = mc.families, cm = mc.confusion_matrix;
+  $("#t-cm").innerHTML = `<thead><tr><th></th>${F.map(f => `<th>${f}</th>`).join("")}</tr></thead><tbody>` + cm.map((row, i) => {
+    const s = row.reduce((a, b) => a + b, 0) || 1;
+    return `<tr><th style="text-align:left">${F[i]}</th>${row.map((v, j) => `<td style="background:rgba(${i === j ? "63,185,80" : "248,81,73"},${Math.min(.85, v / s)})">${fmt(v)}</td>`).join("")}</tr>`;
+  }).join("") + "</tbody>";
+  $("#t-mc").innerHTML = `<thead><tr><th>Lớp</th><th class="n">Số mẫu test</th><th class="n">Precision</th><th class="n">Recall</th><th class="n">F1</th></tr></thead><tbody>` +
+    F.map(f => { const p = mc.per_class[f]; return `<tr><td>${f}</td><td class="n">${fmt(p.support)}</td><td class="n">${pct(p.precision)}</td><td class="n">${pct(p.recall)}</td><td class="n">${fmt(p.f1, 4)}</td></tr>`; }).join("") + "</tbody>";
+  $("#mc-sum").textContent = `Macro-F1 ${fmt(mc.macro_f1, 4)} · Weighted-F1 ${fmt(mc.weighted_f1, 4)} · Accuracy ${pct(mc.accuracy)} · huấn luyện ${fmt(mc.fit_s)} s`;
+}
+
+function renderScale() {
+  const sc = X.scalability;
+  if (!sc) { $("#t-sc").outerHTML = missing("benchmark (python -m ids.bench all)"); return; }
+  const task = $("#sc-task").value, runs = sc.runs.filter(r => r.task === task);
+  const val = r => r.status === "ok" ? (task === "train" ? r.fit_s : r.wall_s) : null;
+  const fracs = [...new Set(runs.map(r => r.frac))].sort((a, b) => a - b);
+  const series = {};
+  for (const r of runs) { const key = `${r.engine} · ${r.cores} core`; (series[key] = series[key] || {})[r.frac] = val(r); }
+  chart("c-sc1", { type: "line", data: { labels: fracs.map(f => f * 100 + "%"), datasets: Object.entries(series).map(([k, s], i) => ({
+      label: k, data: fracs.map(f => s[f] ?? null), borderColor: k.startsWith("spark") ? COLORS[i % 4] : ["#f85149", "#d29922", "#db61a2", "#39c5cf"][i % 4],
+      borderDash: k.startsWith("spark") ? [] : [6, 4], spanGaps: false })) },
+    options: { scales: { y: { beginAtZero: true, title: { display: true, text: task === "train" ? "thời gian fit (s)" : "thời gian (s)" } } } } });
+  const sp = runs.filter(r => r.engine === "spark"), cores = [...new Set(sp.map(r => r.cores))].sort((a, b) => a - b);
+  chart("c-sc2", { type: "line", data: { labels: cores.map(c => c + " core"), datasets: fracs.map((f, i) => ({ label: f * 100 + "% dữ liệu", borderColor: COLORS[i],
+      data: cores.map(c => { const r = sp.find(x => x.cores === c && x.frac === f); return r ? val(r) : null; }) })) },
+    options: { scales: { y: { beginAtZero: true, title: { display: true, text: "giây" } } } } });
+  $("#t-sc").innerHTML = `<thead><tr><th>Engine</th><th>Tác vụ</th><th class="n">Dữ liệu</th><th class="n">Core</th><th>Trạng thái</th><th class="n">Tổng (s)</th><th class="n">Fit (s)</th><th class="n">RAM đỉnh (MB)</th><th class="n">Dòng</th><th class="n">PR-AUC</th></tr></thead><tbody>` +
+    sc.runs.map(r => `<tr><td>${r.engine}</td><td>${r.task}</td><td class="n">${r.frac * 100}%</td><td class="n">${r.cores}</td><td>${r.status === "ok" ? "ok" : `<span class="err">${r.status}</span>`}</td>
+      <td class="n">${fmt(r.wall_s ?? r.elapsed_s, 1)}</td><td class="n">${fmt(r.fit_s, 1)}</td><td class="n">${fmt(r.peak_rss_mb)}</td><td class="n">${fmt(r.rows_out ?? r.rows_train)}</td><td class="n">${fmt(r.pr_auc, 4)}</td></tr>`).join("") + "</tbody>";
+}
+$("#sc-task").onchange = renderScale;
+
+(async () => {
+  X = await api("/api/experiments");
+  renderQuality(X.quality_report); renderS1Auc(X.scenario1); renderCost(); renderMC(X.multiclass); renderScale();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDS2018 · Cảnh báo</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/common.js"></script>
+</head>
+<body>
+<main>
+  <h1>Danh sách cảnh báo</h1>
+  <p class="sub">Mỗi cảnh báo là một luồng có P(tấn công) ≥ ngưỡng tại thời điểm chấm điểm. Bấm vào một dòng để xem chi tiết đặc trưng.</p>
+  <div class="card toolbar">
+    <label class="f">Loại tấn công<select id="type"><option value="">Tất cả</option>
+      <option>DoS</option><option>DDoS</option><option>BruteForce</option><option>WebAttack</option><option>Bot</option><option>Infiltration</option></select></label>
+    <label class="f">Nguồn<select id="src"><option value="">Tất cả</option><option value="replay">Phát lại</option><option value="upload">File tải lên</option></select></label>
+    <label class="f">Kết quả<select id="outcome"><option value="">Tất cả</option><option value="tp">Đúng (TP)</option><option value="fp">Báo động nhầm (FP)</option></select></label>
+    <label class="f">P(tấn công) tối thiểu<input id="minp" type="number" step="0.05" min="0" max="1" value="0" style="width:90px"></label>
+    <label class="f">Tự làm mới<select id="auto"><option value="1">Bật</option><option value="0">Tắt</option></select></label>
+    <span id="count" class="muted"></span>
+  </div>
+  <div class="card"><div class="scroll" style="max-height:none"><table id="t"></table></div>
+    <div class="toolbar" style="margin:10px 0 0"><button class="sec" id="prev">← Trước</button><span id="page" class="muted"></span><button class="sec" id="next">Sau →</button></div>
+  </div>
+</main>
+<aside class="drawer" id="drawer"></aside>
+<script>
+const $ = s => document.querySelector(s);
+let skip = 0; const LIMIT = 50;
+["type", "src", "outcome", "minp"].forEach(id => $("#" + id).onchange = () => { skip = 0; load(); });
+$("#prev").onclick = () => { skip = Math.max(0, skip - LIMIT); load(); };
+$("#next").onclick = () => { skip += LIMIT; load(); };
+async function load() {
+  const q = new URLSearchParams({ limit: LIMIT, skip, min_p: $("#minp").value });
+  for (const k of ["type", "src", "outcome"]) if ($("#" + k).value) q.set(k, $("#" + k).value);
+  const r = await api("/api/alerts?" + q);
+  $("#count").textContent = `${fmt(r.total)} cảnh báo`;
+  $("#page").textContent = r.total ? `${fmt(skip + 1)}–${fmt(Math.min(skip + LIMIT, r.total))} / ${fmt(r.total)}` : "";
+  $("#t").innerHTML = `<thead><tr><th>Thời điểm chấm</th><th>Loại dự đoán</th><th class="n">P(tấn công)</th><th class="n">Ngưỡng</th><th>Nhãn thật</th><th>Kết quả</th><th>Nguồn</th><th>Ngày</th><th>Flow ID</th></tr></thead><tbody>` +
+    (r.items.length ? r.items.map(x => `<tr class="click" data-id="${x.id}"><td>${dtime(x.scored_at)}</td>
+      <td><span class="tag" style="color:${TYPE_COLORS[x.attack_type] || "#ccc"}">${esc(x.attack_type)}</span></td>
+      <td class="n">${fmt(x.p_attack, 4)}</td><td class="n">${fmt(x.threshold, 3)}</td><td>${esc(x.label || "–")}</td><td>${outcomeTag(x.y_true)}</td>
+      <td>${esc(x.src)}${x.job ? ` <span class="muted mono">${esc(x.job)}</span>` : ""}</td><td>${esc(x.day || "–")}</td><td class="mono">${esc(x.uid)}</td></tr>`).join("")
+      : `<tr><td colspan=9 class="empty">Không có cảnh báo phù hợp bộ lọc.</td></tr>`) + "</tbody>";
+  document.querySelectorAll("tr[data-id]").forEach(tr => tr.onclick = () => detail(tr.dataset.id));
+}
+const KEY = ["protocol", "flow_duration", "tot_fwd_pkts", "tot_bwd_pkts", "totlen_fwd_pkts", "totlen_bwd_pkts", "flow_byts_s", "flow_pkts_s",
+  "flow_iat_mean", "fwd_pkt_len_max", "syn_flag_cnt", "ack_flag_cnt", "init_fwd_win_byts", "init_bwd_win_byts"];
+async function detail(id) {
+  location.hash = id;
+  const d = await api("/api/alerts/" + id), f = d.features || {};
+  const rest = Object.keys(f).filter(k => !KEY.includes(k)).sort();
+  const kv = keys => keys.filter(k => k in f).map(k => `<div>${esc(k)}</div><div>${esc(f[k])}</div>`).join("");
+  $("#drawer").innerHTML = `<button class="sec" style="float:right" onclick="closeD()">Đóng ✕</button>
+    <h2>Chi tiết cảnh báo</h2>
+    <p><span class="tag" style="color:${TYPE_COLORS[d.attack_type] || "#ccc"}">${esc(d.attack_type)}</span> ${outcomeTag(d.y_true)}</p>
+    <div class="big">P(tấn công) = ${fmt(d.p_attack, 4)}</div>
+    <div class="bar" style="margin:6px 0 14px"><i style="width:${d.p_attack * 100}%;background:${d.p_attack >= .9 ? "#f85149" : "#d29922"}"></i></div>
+    <div class="kv"><div>Ngưỡng lúc chấm</div><div>${fmt(d.threshold, 3)}</div><div>Nhãn thật</div><div>${esc(d.label || "không có")}</div>
+      <div>Nguồn</div><div>${esc(d.src)} ${esc(d.job || "")}</div><div>Ngày dữ liệu</div><div>${esc(d.day || "–")}</div>
+      <div>Gửi vào Kafka</div><div>${dtime(d.ts)}</div><div>Chấm điểm xong</div><div>${dtime(d.scored_at)}</div>
+      <div>Độ trễ</div><div>${fmt((d.scored_at - d.ts) / 1000, 2)} s</div><div>Flow ID</div><div>${esc(d.uid)}</div></div>
+    <h3 style="margin-top:18px">Đặc trưng chính</h3><div class="kv">${kv(KEY)}</div>
+    <h3 style="margin-top:18px">Tất cả đặc trưng CICFlowMeter</h3><div class="kv">${kv(rest)}</div>`;
+  $("#drawer").classList.add("open");
+}
+function closeD() { $("#drawer").classList.remove("open"); history.replaceState(null, "", location.pathname); }
+load();
+if (location.hash.length > 5) detail(location.hash.slice(1));
+setInterval(() => { if ($("#auto").value === "1" && skip === 0) load(); }, 4000);
+</script>
+</body>
+</html>

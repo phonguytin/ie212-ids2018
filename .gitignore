@@ -1,0 +1,21 @@
+# Dữ liệu gốc (6,9 GB) - tải theo data/README.md
+data/*
+!data/README.md
+data_mini/
+
+# Kết quả trung gian của Spark (Parquet, checkpoint, benchmark)
+work/
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Môi trường / IDE
+.env
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

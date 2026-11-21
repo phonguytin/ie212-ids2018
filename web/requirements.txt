@@ -1,0 +1,5 @@
+fastapi==0.164.0
+uvicorn==0.54.0
+pymongo==4.20.0
+python-multipart==0.0.34
+confluent-kafka==2.16.2

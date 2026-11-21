@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDS2018 · Tổng quan</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="/static/common.js"></script>
+</head>
+<body>
+<main>
+  <h1>Tổng quan thời gian thực</h1>
+  <p class="sub">Luồng mạng được phát lại qua Kafka, Spark Structured Streaming chấm điểm từng luồng và ghi cảnh báo + chỉ số theo cửa sổ 10 giây vào MongoDB.</p>
+
+  <div class="card toolbar">
+    <label class="f">Ngày dữ liệu phát lại<select id="file"></select></label>
+    <label class="f">Tốc độ (luồng/giây)<input id="rate" type="number" value="1000" min="1" max="20000" style="width:110px"></label>
+    <label class="f">Bắt đầu từ (% file)<input id="startpct" type="number" value="0" min="0" max="99" style="width:90px"></label>
+    <label class="f">Nguồn hiển thị<select id="src"><option value="replay">Phát lại</option><option value="upload">File tải lên</option><option value="all">Tất cả</option></select></label>
+    <button id="start">▶ Bắt đầu phát lại</button>
+    <button id="stop" class="sec">■ Dừng</button>
+    <button id="reset" class="danger" title="Xoá cảnh báo, chỉ số và kết quả upload">Xoá dữ liệu demo</button>
+    <span id="replay-state" class="muted"></span>
+  </div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid g32">
+    <div class="card"><h3>Lưu lượng và cảnh báo theo cửa sổ 10 giây</h3><div class="chart"><canvas id="c-flow"></canvas></div></div>
+    <div class="card"><h3>Phân bố loại tấn công dự đoán</h3><div class="chart"><canvas id="c-type"></canvas></div></div>
+  </div>
+  <div class="grid g32" style="margin-top:14px">
+    <div class="card"><h3>FP / FN theo cửa sổ và chi phí cộng dồn</h3><div class="chart"><canvas id="c-cost"></canvas></div>
+      <div class="note">Chi phí = c_FP × FP + c_FN × FN, tính theo tỷ lệ chi phí đang cấu hình. FP/FN chỉ tính trên luồng có nhãn thật (dữ liệu phát lại).</div></div>
+    <div class="card"><h3>Nhãn thật của các luồng tấn công</h3><div class="scroll" style="max-height:260px"><table id="t-label"></table></div></div>
+  </div>
+  <div class="card" style="margin-top:14px">
+    <h3>Cảnh báo mới nhất <a href="/alerts" style="float:right;text-transform:none">xem tất cả →</a></h3>
+    <div class="scroll" style="max-height:340px"><table id="t-alerts"></table></div>
+  </div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+async function loadFiles() {
+  const fs = await api("/api/files");
+  $("#file").innerHTML = fs.map(f => `<option value="${esc(f.name)}">${esc(f.name.replace("_TrafficForML_CICFlowMeter.csv", ""))} (${fmt(f.size / 2 ** 20)} MB)</option>`).join("");
+}
+$("#start").onclick = async () => {
+  try { await post("/api/replay/start", { file: $("#file").value, rate: +$("#rate").value, start_pct: +$("#startpct").value }); refresh(); }
+  catch (e) { alert(e.message); }
+};
+$("#stop").onclick = async () => { await post("/api/replay/stop", {}); refresh(); };
+$("#reset").onclick = async () => { if (confirm("Xoá toàn bộ cảnh báo, chỉ số và kết quả upload của demo?")) { await post("/api/reset", {}); refresh(); } };
+$("#src").onchange = () => refresh();
+
+function kpi(l, v, s = "", cls = "") { return `<div class="kpi ${cls}"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`; }
+
+async function refresh() {
+  let o;
+  try { o = await api(`/api/overview?src=${$("#src").value}`); } catch (e) { $("#kpis").innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+  const t = o.totals, r = o.replay || {};
+  $("#replay-state").innerHTML = r.running ? `<span class="dot on"></span>Đang phát ${esc(r.file)} · đã gửi ${fmt(r.sent)}`
+    : (r.file ? `Đã dừng · đã gửi ${fmt(r.sent)} luồng từ ${esc(r.file)}` : "") + (r.error ? ` <span class="err">${esc(r.error)}</span>` : "");
+  $("#kpis").innerHTML = [
+    kpi("Luồng đã chấm điểm", fmt(t.n), `${fmt(t.labeled)} có nhãn`),
+    kpi("Cảnh báo", fmt(t.alerts), t.n ? pct(t.alerts / t.n) + " lưu lượng" : "", "acc"),
+    kpi("Bắt đúng (TP)", fmt(t.tp), "", "ok"),
+    kpi("Báo động nhầm (FP)", fmt(t.fp), `chi phí ${fmt(o.config.c_fp)} / FP`, "warn"),
+    kpi("Bỏ sót (FN)", fmt(t.fn), `chi phí ${fmt(o.config.c_fn)} / FN`, "bad"),
+    kpi("Precision", pct(o.precision)), kpi("Recall", pct(o.recall)),
+    kpi("Chi phí cộng dồn", fmt(o.cost), `tỷ lệ 1:${fmt(o.config.c_fn / o.config.c_fp)}`, "bad"),
+    kpi("Độ trễ trung bình", o.avg_latency_ms ? fmt(o.avg_latency_ms / 1000, 2) + " s" : "–", "gửi Kafka → ghi MongoDB"),
+    kpi("Ngưỡng đang áp dụng", fmt(o.config.threshold, 3), `<a href="/config">thay đổi</a>`),
+  ].join("");
+
+  const W = o.windows, labels = W.map(w => new Date(w.t).toLocaleTimeString("vi-VN"));
+  chart("c-flow", { type: "line", data: { labels, datasets: [
+      { label: "Luồng", data: W.map(w => w.n), borderColor: COLORS[0], backgroundColor: "rgba(76,154,255,.12)", fill: true, pointRadius: 0, tension: .25 },
+      { label: "Cảnh báo", data: W.map(w => w.alerts), borderColor: COLORS[1], pointRadius: 0, tension: .25 }] },
+    options: { interaction: { mode: "index", intersect: false }, scales: { x: { ticks: { maxTicksLimit: 8 } }, y: { beginAtZero: true } } } });
+  chart("c-cost", { type: "bar", data: { labels, datasets: [
+      { label: "FP", data: W.map(w => w.fp), backgroundColor: "#d29922", stack: "e" },
+      { label: "FN", data: W.map(w => w.fn), backgroundColor: "#f85149", stack: "e" },
+      { label: "Chi phí cộng dồn", type: "line", data: W.map(w => w.cum_cost), borderColor: "#a371f7", pointRadius: 0, yAxisID: "y2" }] },
+    options: { interaction: { mode: "index", intersect: false }, scales: { x: { stacked: true, ticks: { maxTicksLimit: 8 } }, y: { stacked: true, beginAtZero: true, title: { display: true, text: "số luồng" } },
+      y2: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: "chi phí" } } } } });
+  const types = Object.entries(o.by_type).sort((a, b) => b[1] - a[1]);
+  chart("c-type", { type: "doughnut", data: { labels: types.map(x => x[0]), datasets: [{ data: types.map(x => x[1]),
+      backgroundColor: types.map((x, i) => TYPE_COLORS[x[0]] || COLORS[i % 8]), borderWidth: 0 }] },
+    options: { plugins: { legend: { position: "right" } } } });
+  const labs = Object.entries(o.by_label).sort((a, b) => b[1] - a[1]);
+  $("#t-label").innerHTML = `<thead><tr><th>Nhãn gốc</th><th class="n">Số luồng</th></tr></thead><tbody>` +
+    (labs.length ? labs.map(([l, n]) => `<tr><td>${esc(l)}</td><td class="n">${fmt(n)}</td></tr>`).join("") : `<tr><td colspan=2 class="empty">Chưa có luồng tấn công</td></tr>`) + "</tbody>";
+
+  const a = await api(`/api/alerts?limit=15${$("#src").value === "all" ? "" : "&src=" + $("#src").value}`);
+  $("#t-alerts").innerHTML = `<thead><tr><th>Thời điểm</th><th>Loại dự đoán</th><th class="n">P(tấn công)</th><th>Nhãn thật</th><th>Kết quả</th><th>Nguồn</th><th>Flow</th></tr></thead><tbody>` +
+    (a.items.length ? a.items.map(x => `<tr class="click" onclick="location.href='/alerts#${x.id}'"><td>${time(x.scored_at)}</td><td><span class="tag" style="color:${TYPE_COLORS[x.attack_type] || "#ccc"}">${esc(x.attack_type)}</span></td>
+      <td class="n">${fmt(x.p_attack, 3)}</td><td>${esc(x.label || "–")}</td><td>${outcomeTag(x.y_true)}</td><td>${esc(x.src)}</td><td class="mono">${esc(x.uid)}</td></tr>`).join("")
+      : `<tr><td colspan=7 class="empty">Chưa có cảnh báo. Bấm “Bắt đầu phát lại” để gửi luồng vào Kafka.</td></tr>`) + "</tbody>";
+}
+loadFiles(); refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>

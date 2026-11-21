@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDS2018 · Phân tích file</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="/static/common.js"></script>
+</head>
+<body>
+<main>
+  <h1>Phân tích file luồng mạng</h1>
+  <p class="sub">Tải lên file CSV do CICFlowMeter xuất (cùng định dạng CSE-CIC-IDS2018). Từng dòng được đẩy vào Kafka và chấm điểm bởi <b>chính luồng Spark Structured Streaming</b> đang chạy, với ngưỡng đang cấu hình. Nếu file có cột <code>Label</code>, trang sẽ tính thêm TP/FP/FN.</p>
+  <div class="card toolbar">
+    <label class="f">File CSV<input type="file" id="file" accept=".csv,text/csv"></label>
+    <button id="go">Tải lên và chấm điểm</button>
+    <span id="msg" class="muted"></span>
+  </div>
+  <div id="job" style="display:none">
+    <div class="card" style="margin-bottom:14px">
+      <h2 id="j-title"></h2>
+      <div class="pbar"><i id="j-bar" style="width:0"></i></div>
+      <div id="j-prog" class="muted"></div>
+    </div>
+    <div class="kpis" id="j-kpis"></div>
+    <div class="grid g2">
+      <div class="card"><h3>Cảnh báo theo loại tấn công</h3><div class="chart short"><canvas id="c-type"></canvas></div></div>
+      <div class="card"><h3>Phân bố P(tấn công)</h3><div class="chart short"><canvas id="c-hist"></canvas></div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h3>Cảnh báo có điểm cao nhất</h3><div class="scroll"><table id="t-top"></table></div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Các lần tải lên gần đây</h3><table id="t-jobs"></table></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let job = location.hash.slice(1) || null, timer = null;
+$("#go").onclick = async () => {
+  const f = $("#file").files[0]; if (!f) { $("#msg").textContent = "Chọn một file CSV trước."; return; }
+  const fd = new FormData(); fd.append("file", f);
+  $("#go").disabled = true; $("#msg").textContent = "Đang tải lên…";
+  try {
+    const r = await api("/api/upload", { method: "POST", body: fd });
+    $("#msg").textContent = `Đã đưa ${fmt(r.total)} luồng vào Kafka${r.truncated ? " (đã cắt bớt theo giới hạn)" : ""}.`;
+    job = r.job; location.hash = job; watch();
+  } catch (e) { $("#msg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  $("#go").disabled = false;
+};
+function watch() { clearInterval(timer); show(); timer = setInterval(show, 1500); }
+function kpi(l, v, s = "", c = "") { return `<div class="kpi ${c}"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`; }
+async function show() {
+  if (!job) return;
+  let j; try { j = await api(`/api/uploads/${job}`); } catch (e) { return; }
+  $("#job").style.display = "";
+  const done = j.scored >= j.total;
+  if (done) clearInterval(timer);
+  $("#j-title").textContent = `${j.filename} · job ${j.id}`;
+  $("#j-bar").style.width = (j.total ? 100 * j.scored / j.total : 0) + "%";
+  $("#j-prog").textContent = `${fmt(j.scored)} / ${fmt(j.total)} luồng đã chấm điểm${done ? " · hoàn tất" : " …"}`;
+  const c = j.confusion, cfg = j.config;
+  const ks = [kpi("Luồng", fmt(j.total)), kpi("Cảnh báo", fmt(j.alerts), j.scored ? pct(j.alerts / j.scored) : "", "acc"),
+    kpi("Ngưỡng", fmt(cfg.threshold, 3), `c_FP:c_FN = 1:${fmt(cfg.c_fn / cfg.c_fp)}`)];
+  if (c) {
+    const p = c.tp + c.fp ? c.tp / (c.tp + c.fp) : null, r = c.tp + c.fn ? c.tp / (c.tp + c.fn) : null;
+    ks.push(kpi("TP", fmt(c.tp), "", "ok"), kpi("FP", fmt(c.fp), "", "warn"), kpi("FN", fmt(c.fn), "", "bad"),
+      kpi("Precision", pct(p)), kpi("Recall", pct(r)), kpi("Chi phí", fmt(cfg.c_fp * c.fp + cfg.c_fn * c.fn), "", "bad"));
+  } else ks.push(kpi("Nhãn thật", "không có", "file không có cột Label"));
+  $("#j-kpis").innerHTML = ks.join("");
+  const types = Object.entries(j.by_type).sort((a, b) => b[1] - a[1]);
+  chart("c-type", { type: "bar", data: { labels: types.map(x => x[0]), datasets: [{ label: "cảnh báo", data: types.map(x => x[1]), backgroundColor: types.map(x => TYPE_COLORS[x[0]] || "#4c9aff") }] },
+    options: { indexAxis: "y", plugins: { legend: { display: false } } } });
+  chart("c-hist", { type: "bar", data: { labels: j.p_hist.map((_, i) => (i / 20).toFixed(2)), datasets: [{ label: "số luồng", data: j.p_hist,
+      backgroundColor: j.p_hist.map((_, i) => i / 20 >= cfg.threshold ? "#f85149" : "#4c9aff") }] },
+    options: { plugins: { legend: { display: false } }, scales: { y: { type: "logarithmic" } } } });
+  $("#t-top").innerHTML = `<thead><tr><th class="n">Dòng</th><th>Loại dự đoán</th><th class="n">P(tấn công)</th><th>Nhãn trong file</th></tr></thead><tbody>` +
+    (j.top_alerts.length ? j.top_alerts.map(x => `<tr><td class="n">${x.row + 2}</td><td><span class="tag" style="color:${TYPE_COLORS[x.attack_type] || "#ccc"}">${esc(x.attack_type)}</span></td>
+      <td class="n">${fmt(x.p_attack, 4)}</td><td>${esc(x.label || "–")}</td></tr>`).join("") : `<tr><td colspan=4 class="empty">Chưa có cảnh báo</td></tr>`) + "</tbody>";
+  jobs();
+}
+async function jobs() {
+  const js = await api("/api/uploads");
+  $("#t-jobs").innerHTML = `<thead><tr><th>Thời điểm</th><th>File</th><th class="n">Luồng</th><th class="n">Đã chấm</th><th class="n">Cảnh báo</th><th></th></tr></thead><tbody>` +
+    (js.length ? js.map(x => `<tr><td>${dtime(x.created_at)}</td><td>${esc(x.filename)}</td><td class="n">${fmt(x.total)}</td><td class="n">${fmt(x.scored)}</td><td class="n">${fmt(x.alerts)}</td>
+      <td><a href="#${x.id}" onclick="job='${x.id}';watch()">xem</a></td></tr>`).join("") : `<tr><td colspan=6 class="empty">Chưa có file nào</td></tr>`) + "</tbody>";
+}
+jobs(); if (job) watch();
+</script>
+</body>
+</html>
