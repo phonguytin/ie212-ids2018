@@ -48,13 +48,7 @@
 
 ## 1. Tải dữ liệu
 
-Bộ "Processed Traffic Data for ML Algorithms" trên AWS Open Data, tải công khai không cần tài khoản:
-
-```powershell
-aws s3 cp --no-sign-request "s3://cse-cic-ids2018/Processed Traffic Data for ML Algorithms/" data/ --recursive
-```
-
-Kết quả là 10 file `*_TrafficForML_CICFlowMeter.csv` trong `data/` (file `Thuesday-20-02-2018` nặng 4 GB, có thêm 4 cột Flow ID / Src IP / Src Port / Dst IP).
+mục Data
 
 ## 2. Batch layer
 
