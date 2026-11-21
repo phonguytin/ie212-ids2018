@@ -54,11 +54,13 @@ mục Data
 
 ### Cách A: Google Colab
 
-1. Chép thư mục dự án lên Google Drive (ví dụ `MyDrive/ie212/`, cần ít nhất `src/` và `notebooks/`).
-2. Mở `notebooks/colab_batch.ipynb` trên Colab, sửa biến `PROJECT` nếu cần, chạy lần lượt các ô.
-3. Tải `models/` và `results/` từ Drive về đặt vào thư mục dự án trên máy.
+Mở [`notebooks/colab_batch.ipynb`](https://colab.research.google.com/github/phonguytin/ie212-ids2018/blob/main/notebooks/colab_batch.ipynb) trên Colab, rồi chạy lần lượt các ô.
 
-Colab miễn phí có 2 core và khoảng 12 GB RAM, nên notebook dùng `--train-frac` (lấy mẫu phân tầng **chỉ tập train**, nhãn hiếm giữ nguyên; validation/test luôn đầy đủ).
+- Notebook tự clone repo vào `MyDrive/ie212-ids2018` và tải dữ liệu từ AWS.
+- Kết quả và mô hình được ghi vào `colab_out/{results,models}`, tách riêng khỏi kết quả của bản Docker.
+- Parquet được sao lưu ở `MyDrive/ie212_parquet` (khoảng 3,4 GB), nên khi bị ngắt phiên có thể chạy tiếp mà không phải làm lại ETL.
+
+Colab miễn phí có 2 core và khoảng 12 GB RAM, nên notebook dùng `--train-frac`: lấy mẫu phân tầng **chỉ trên tập train**, giữ nguyên nhãn hiếm; validation và test luôn đầy đủ.
 
 ### Cách B: Docker trên máy (dịch vụ `batch`)
 
@@ -120,7 +122,7 @@ docker compose logs -f scorer
 
 ### Các trang web
 
-* **Tổng quan**: chọn một ngày dữ liệu và tốc độ phát lại (luồng/giây) rồi bấm *Bắt đầu phát lại*. Trang hiển thị lưu lượng, cảnh báo, TP/FP/FN, precision/recall, chi phí cộng dồn, độ trễ, phân bố loại tấn công và cảnh báo mới nhất, tự làm mới mỗi 2 giây. Gợi ý: `Wednesday-14-02-2018` (FTP/SSH brute force) bắt đầu từ khoảng 40% file, `Friday-16-02-2018` (DoS Hulk), `Friday-02-03-2018` (Botnet).
+* **Tổng quan**: chọn một ngày dữ liệu và tốc độ phát lại (luồng/giây) rồi bấm *Bắt đầu phát lại*. Trang hiển thị lưu lượng, cảnh báo, TP/FP/FN, precision/recall, chi phí cộng dồn, độ trễ, phân bố loại tấn công và cảnh báo mới nhất, tự làm mới mỗi 2 giây. Gợi ý: `Wednesday-14-02-2018` (FTP/SSH brute force ở khoảng 0–35% đầu file, phần sau là Benign) và `Friday-02-03-2018` (Botnet ở khoảng 0–35% đầu file). Bắt đầu từ 25–30% để thấy cả tấn công lẫn luồng bình thường.
 * **Cảnh báo**: lọc theo loại, nguồn, TP/FP, xác suất; bấm một dòng để xem toàn bộ đặc trưng của luồng.
 * **Phân tích file**: tải lên CSV định dạng CICFlowMeter; các dòng đi qua **chính** Kafka → Spark, trang theo dõi tiến độ và thống kê kết quả (có thêm TP/FP/FN nếu file có cột `Label`).
 * **Thực nghiệm**: chất lượng dữ liệu, bảng kịch bản 1 và 2, recall từng loại tấn công, ma trận nhầm lẫn đa lớp, biểu đồ mở rộng. Thanh trượt tỷ lệ chi phí tính lại ngưỡng tối ưu cho mọi mô hình.
@@ -129,7 +131,7 @@ docker compose logs -f scorer
 Phát lại bằng dòng lệnh (không qua web):
 
 ```powershell
-docker compose exec api python -m app.producer --file /data/Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv --rate 1000 --start-pct 40
+docker compose exec api python -m app.producer --file /data/Wednesday-14-02-2018_TrafficForML_CICFlowMeter.csv --rate 1000 --start-pct 25
 ```
 
 ## Phương pháp

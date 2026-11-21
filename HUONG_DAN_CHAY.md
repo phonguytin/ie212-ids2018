@@ -88,7 +88,7 @@ Job streaming nạp `models/deploy.json` khi khởi động. Sau khi huấn luy�
 
 **Nguồn dữ liệu đầu vào**
 - *Phát lại*: chọn trên trang Tổng quan, hoặc chạy lệnh
-  `docker compose exec api python -m app.producer --file /data/<file>.csv --rate 1000 --start-pct 40`
+  `docker compose exec api python -m app.producer --file /data/<file>.csv --rate 1000 --start-pct 25`
 - *Tải file*: trang Phân tích file nhận CSV định dạng CICFlowMeter. File mẫu: `samples/sample_upload_bot.csv`.
 
 **Cấu hình runtime**: ngưỡng, c_FP và c_FN được lưu trong collection `config` của MongoDB. Job streaming đọc cấu hình này ở mỗi micro-batch, nên thay đổi trên trang Cấu hình ngưỡng có hiệu lực ngay mà không cần khởi động lại.
