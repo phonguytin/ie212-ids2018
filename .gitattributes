@@ -1,0 +1,2 @@
+# Spark kiểm tra checksum .crc của mô hình: giữ nguyên byte, không đổi ký tự xuống dòng
+models/** -text

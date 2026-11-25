@@ -1250,9 +1250,9 @@
     "timestamp"
   ],
   "timings": {
-    "csv_to_staging_s": 293.808,
-    "quality_report_s": 144.918,
-    "write_clean_s": 122.883,
-    "write_dedup_s": 211.959
+    "csv_to_staging_s": 247.916,
+    "quality_report_s": 141.226,
+    "write_clean_s": 76.158,
+    "write_dedup_s": 102.404
   }
 }
