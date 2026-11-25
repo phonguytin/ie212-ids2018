@@ -48,7 +48,7 @@
 
 ## 1. Tải dữ liệu
 
-mục Data
+Xem [data/README.md](data/README.md): tải 10 file CSV (6,9 GB) bằng AWS CLI, không cần tài khoản, hoặc từ thư mục Google Drive.
 
 ## 2. Batch layer
 
@@ -56,11 +56,12 @@ mục Data
 
 Mở [`notebooks/colab_batch.ipynb`](https://colab.research.google.com/github/phonguytin/ie212-ids2018/blob/main/notebooks/colab_batch.ipynb) trên Colab, rồi chạy lần lượt các ô.
 
-- Notebook tự clone repo vào `MyDrive/ie212-ids2018` và tải dữ liệu từ AWS.
+- Notebook tự clone repo vào `MyDrive/ie212-ids2018`. Dữ liệu lấy từ `MyDrive/ie212_data` nếu đã có đủ 10 file, nếu không thì tự tải từ AWS.
 - Kết quả và mô hình được ghi vào `colab_out/{results,models}`, tách riêng khỏi kết quả của bản Docker.
 - Parquet được sao lưu ở `MyDrive/ie212_parquet` (khoảng 3,4 GB), nên khi bị ngắt phiên có thể chạy tiếp mà không phải làm lại ETL.
+- Ô thiết lập tự tính bộ nhớ driver, số phân vùng shuffle và số core benchmark theo máy.
 
-Colab miễn phí có 2 core và khoảng 12 GB RAM, nên notebook dùng `--train-frac`: lấy mẫu phân tầng **chỉ trên tập train**, giữ nguyên nhãn hiếm; validation và test luôn đầy đủ.
+Notebook mặc định cấu hình cho Colab Pro High-RAM (8 vCPU, 50 GB RAM, khoảng 10 giờ): 100% tập train cho kịch bản 1 và đa lớp, 50% cho kịch bản 2. Trên Colab miễn phí (2 vCPU, khoảng 12 GB), đặt `S1_TRAIN_FRAC = 0.3` và `S2_TRAIN_FRAC = 0.2`. `--train-frac` lấy mẫu phân tầng **chỉ trên tập train**, giữ nguyên nhãn hiếm; validation và test luôn đầy đủ.
 
 ### Cách B: Docker trên máy (dịch vụ `batch`)
 
