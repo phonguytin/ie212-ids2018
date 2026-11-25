@@ -3,7 +3,7 @@
 Đồ án IE212. Hệ thống học máy phân tán trên Apache Spark phát hiện luồng mạng độc hại trong khoảng 16 triệu luồng của CSE-CIC-IDS2018. Ngưỡng cảnh báo được chọn theo **chi phí** (`Cost = c_FP·FP + c_FN·FN`) thay vì accuracy. Phần thời gian thực đi qua Kafka → Spark Structured Streaming → MongoDB, có trang web cho người vận hành.
 
 ```
-                 ┌────────────────────── Batch layer (Google Colab hoặc Docker "batch") ──────────────────────┐
+                 ┌──────────────────────────────── Batch layer (Google Colab) ────────────────────────────────┐
  10 CSV (6,9 GB) │ ids.etl: làm sạch, thống nhất schema, khử trùng lặp → Parquet theo ngày + quality_report  │
  ───────────────►│ ids.train: LR / DT / RF / GBT (nhị phân) + RF đa lớp, kịch bản 1 & 2, quét ngưỡng chi phí │──► models/ + results/
                  │ ids.bench: Spark vs pandas/scikit-learn trên 25/50/100% dữ liệu thật                        │
@@ -30,10 +30,10 @@
 | `src/ids/stream_scorer.py` | Job Spark Structured Streaming: Kafka → chấm điểm → MongoDB |
 | `web/app/` | FastAPI (`main.py`), producer Kafka (`producer.py`), giao diện (`static/`) |
 | `notebooks/colab_batch.ipynb` | Chạy toàn bộ batch layer trên Google Colab |
-| `docker-compose.yml`, `docker/spark/Dockerfile`, `web/Dockerfile` | Hạ tầng tái lập bằng Docker |
+| `docker-compose.yml`, `docker/spark/Dockerfile`, `web/Dockerfile` | Hạ tầng speed layer và serving layer bằng Docker |
 | `data/` | 10 file CSV (không đưa vào git, tải theo `data/README.md`) |
-| `models/` | `binary/`, `multiclass_rf/`, `deploy.json`: mô hình RF đã huấn luyện sẵn, sinh ra từ batch layer, đủ để chạy demo ngay |
-| `results/` | Kết quả tham chiếu: JSON, `figures/`, `summary.md` |
+| `models/` | `binary/`, `multiclass_rf/`, `deploy.json`: mô hình RF huấn luyện trên Colab, đủ để chạy demo ngay |
+| `results/` | Kết quả của lần chạy Colab Pro: JSON, `figures/`, `summary.md` |
 | `samples/sample_upload_bot.csv` | File mẫu để thử trang Phân tích file (Benign + Bot, có nhãn) |
 | `scripts/check_skew.py` | Kiểm tra batch và streaming có cho cùng kết quả không (train/serve skew) |
 | `HUONG_DAN_CHAY.md` | **Hướng dẫn chạy lại từng bước**, nên đọc trước |
@@ -42,66 +42,39 @@
 
 ## Yêu cầu
 
-* Docker Desktop (cấp ít nhất 8 GB RAM cho Docker; chạy batch cục bộ trên toàn bộ dữ liệu nên cấp 12–16 GB).
-* Hoặc Google Colab cho batch layer (không cần cài gì trên máy).
+* Google Colab cho batch layer (không cần cài gì trên máy). Cấu hình mặc định dành cho Colab Pro High-RAM.
+* Docker Desktop cho speed layer và serving layer (cấp ít nhất 8 GB RAM cho Docker).
 * Phiên bản cố định: Spark 4.0.1 (Java 17, Python 3.10 trong container), Kafka 3.9.1, MongoDB 8.0. Colab cài `pyspark==4.0.1` để mô hình lưu ở Colab nạp được trong container.
 
 ## 1. Tải dữ liệu
 
 Xem [data/README.md](data/README.md): tải 10 file CSV (6,9 GB) bằng AWS CLI, không cần tài khoản, hoặc từ thư mục Google Drive.
 
-## 2. Batch layer
-
-### Cách A: Google Colab
+## 2. Batch layer (Google Colab)
 
 Mở [`notebooks/colab_batch.ipynb`](https://colab.research.google.com/github/phonguytin/ie212-ids2018/blob/main/notebooks/colab_batch.ipynb) trên Colab, rồi chạy lần lượt các ô.
 
 - Notebook tự clone repo vào `MyDrive/ie212-ids2018`. Dữ liệu lấy từ `MyDrive/ie212_data` nếu đã có đủ 10 file, nếu không thì tự tải từ AWS.
-- Kết quả và mô hình được ghi vào `colab_out/{results,models}`, tách riêng khỏi kết quả của bản Docker.
+- Kết quả và mô hình được ghi vào `colab_out/{results,models}` để không ghi đè bộ kết quả đang có trong repo. Muốn cập nhật thì chép đè lên `results/` và `models/`.
 - Parquet được sao lưu ở `MyDrive/ie212_parquet` (khoảng 3,4 GB), nên khi bị ngắt phiên có thể chạy tiếp mà không phải làm lại ETL.
 - Ô thiết lập tự tính bộ nhớ driver, số phân vùng shuffle và số core benchmark theo máy.
 
 Notebook mặc định cấu hình cho Colab Pro High-RAM (8 vCPU, 50 GB RAM, khoảng 10 giờ): 100% tập train cho kịch bản 1 và đa lớp, 50% cho kịch bản 2. Trên Colab miễn phí (2 vCPU, khoảng 12 GB), đặt `S1_TRAIN_FRAC = 0.3` và `S2_TRAIN_FRAC = 0.2`. `--train-frac` lấy mẫu phân tầng **chỉ trên tập train**, giữ nguyên nhãn hiếm; validation và test luôn đầy đủ.
 
-### Cách B: Docker trên máy (dịch vụ `batch`)
+| Bước | Mục trong notebook | Lệnh | Thời gian trên Colab Pro |
+|---|---|---|---|
+| ETL, báo cáo chất lượng dữ liệu | 1 | `ids.etl` | 15 phút |
+| Kịch bản 1 (có / không trùng lặp) | 2 | `ids.train scenario1` | 2 giờ |
+| Random Forest đa lớp | 3 | `ids.train multiclass` | 18 phút |
+| Kịch bản 2 (leave-one-day-out) | 4 | `ids.train scenario2` | 2 giờ 34 phút |
+| Benchmark khả năng mở rộng | 5 | `ids.bench prepare`, `ids.bench all` | 5 giờ 7 phút |
+| Biểu đồ, bảng tổng hợp | 6 | `ids.figures` | < 1 phút |
 
-```powershell
-docker compose build
-```
-
-```powershell
-docker compose --profile batch run --rm batch python3 -m ids.etl --input data --output work/parquet --report results/quality_report.json
-```
-
-```powershell
-docker compose --profile batch run --rm batch python3 -m ids.train scenario1 --preset full --train-frac 0.3
-```
-
-```powershell
-docker compose --profile batch run --rm batch python3 -m ids.train multiclass --preset full --train-frac 0.3
-```
-
-```powershell
-docker compose --profile batch run --rm batch python3 -m ids.train scenario2 --preset fast --train-frac 0.2 --resume
-```
-
-```powershell
-docker compose --profile batch run --rm batch python3 -m ids.bench prepare
-```
-
-```powershell
-docker compose --profile batch run --rm batch python3 -m ids.bench all --cores 1,2,4,8 --fracs 0.25,0.5,1.0 --resume
-```
-
-```powershell
-docker compose --profile batch run --rm batch python3 -m ids.figures
-```
-
-Tham số chính của `ids.train`: `--models lr,dt,rf,gbt`, `--preset full|fast`, `--train-frac`, `--days 2018-02-14,...` (kịch bản 2), `--seed`. Mỗi kịch bản ghi kết quả từng phần sau mỗi mô hình, nên dừng giữa chừng vẫn giữ được phần đã xong (`--resume` cho kịch bản 2).
+Tham số chính của `ids.train` (tỷ lệ train và preset đặt bằng biến trong ô thiết lập): `--models lr,dt,rf,gbt`, `--preset full|fast`, `--train-frac`, `--days 2018-02-14,...` (kịch bản 2), `--seed`. Mỗi kịch bản ghi kết quả từng phần sau mỗi mô hình, nên dừng giữa chừng vẫn giữ được phần đã xong (`--resume` cho kịch bản 2).
 
 ## 3. Speed layer + serving layer
 
-Cần có `models/deploy.json`, `models/binary/` (và tuỳ chọn `models/multiclass_rf/`) từ bước 2.
+Repo đã kèm `models/deploy.json`, `models/binary/` và `models/multiclass_rf/` từ lần chạy Colab, nên chạy được ngay mà không cần chạy lại bước 2.
 
 ```powershell
 docker compose up -d --build
@@ -165,7 +138,7 @@ docker compose exec api python -m app.producer --file /data/Wednesday-14-02-2018
 | Khả năng mở rộng trên dữ liệu thật | `ids.bench`, `results/scalability.json`, `figures/scalability.png` |
 | Kafka + Structured Streaming + MongoDB | `ids.stream_scorer`, `docker-compose.yml` |
 | Web demo cho người vận hành | `web/app` (5 trang) |
-| Tái lập bằng Docker | `docker compose up`, dịch vụ `batch` |
+| Tái lập | Notebook Colab cho batch layer, `docker compose up` cho speed layer và serving layer |
 
 ## Hạn chế và hướng phát triển
 
